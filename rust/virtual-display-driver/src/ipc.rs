@@ -28,6 +28,32 @@ use windows::Win32::{
 
 use crate::context::DeviceContext;
 
+/// File-based diagnostic logger. The crate's `log::error!` path routes to
+/// the Windows event log via driver-logger, but `RegisterEventSourceW`
+/// only surfaces info-level entries in our build (errors are silently
+/// dropped). For the first-attach-only IddCxMonitorArrival bug we need
+/// to see every step of the second+ notify, so this writes plain text
+/// to a path SYSTEM can always reach.
+pub fn diag(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let path = r"C:\ProgramData\VirtualDisplayDriver\diag.log";
+    // Create parent dir if missing (idempotent, ignore errors).
+    let _ = std::fs::create_dir_all(r"C:\ProgramData\VirtualDisplayDriver");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(
+            f,
+            "[{}] [tid={:?}] {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            std::thread::current().id(),
+            msg
+        );
+    }
+}
+
 pub static ADAPTER: OnceLock<AdapterObject> = OnceLock::new();
 pub static MONITOR_MODES: LazyLock<Mutex<Vec<MonitorObject>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
@@ -316,16 +342,27 @@ fn has_duplicates(monitors: &[Monitor]) -> bool {
 /// Only detaches/reattaches if required
 /// e.g. only a monitor name update would not detach/arrive a monitor
 fn notify(monitors: Vec<Monitor>) {
+    diag(&format!(
+        "notify() ENTRY: {} monitor(s) requested: {:?}",
+        monitors.len(),
+        monitors.iter().map(|m| (m.id, m.enabled, m.name.clone())).collect::<Vec<_>>()
+    ));
+
     // Duplicated id's will not cause any issue, however duplicated resolutions/refresh rates are possible
     // They should all be unique anyways. So warn + noop if the sender sent incorrect data
     if has_duplicates(&monitors) {
         warn!("notify(): Duplicate data was detected; update aborted");
+        diag("notify(): ABORT - duplicate ids in request");
         return;
     }
 
-    let adapter = ADAPTER.get().unwrap().0.as_ptr();
+    let adapter_opt = ADAPTER.get();
+    diag(&format!("notify(): ADAPTER.get() is_some={}", adapter_opt.is_some()));
+    let adapter = adapter_opt.unwrap().0.as_ptr();
+    diag(&format!("notify(): adapter ptr = {:p}", adapter));
 
     let mut lock = MONITOR_MODES.lock().unwrap();
+    diag(&format!("notify(): MONITOR_MODES has {} entries before diff", lock.len()));
 
     // Remove monitors from internal list which are missing from the provided list
 
@@ -399,33 +436,57 @@ fn notify(monitors: Vec<Monitor>) {
     // context.create_monitor locks again, so this avoids deadlock
     drop(lock);
 
+    diag(&format!(
+        "notify(): should_arrive = {:?}",
+        should_arrive
+    ));
+
     let cb = |context: &mut DeviceContext| {
+        diag("notify(): inside DeviceContext::get_mut callback");
         // arrive any monitors that need arriving
         for (id, arrive) in should_arrive {
             if arrive {
-                if let Err(e) = context.create_monitor(id) {
-                    error!("Failed to create monitor: {e:?}");
+                diag(&format!("notify(): calling create_monitor(id={id})"));
+                match context.create_monitor(id) {
+                    Ok(()) => diag(&format!("notify(): create_monitor(id={id}) → Ok")),
+                    Err(e) => {
+                        error!("Failed to create monitor: {e:?}");
+                        diag(&format!("notify(): create_monitor(id={id}) → Err({e:?})"));
+                    }
                 }
+            } else {
+                diag(&format!("notify(): skip id={id} (arrive=false)"));
             }
         }
     };
 
-    unsafe {
-        DeviceContext::get_mut(adapter.cast(), cb).unwrap();
-    }
+    let gm_result = unsafe { DeviceContext::get_mut(adapter.cast(), cb) };
+    diag(&format!("notify(): DeviceContext::get_mut returned: {:?}", gm_result.is_ok()));
+    gm_result.unwrap();
 }
 
 fn remove_all() {
+    diag("remove_all() ENTRY");
     let mut lock = MONITOR_MODES.lock().unwrap();
+    diag(&format!("remove_all(): draining {} monitor(s)", lock.len()));
 
     for monitor in lock.drain(..) {
+        let id = monitor.data.id;
         if let Some(mut monitor_object) = monitor.object {
             let obj = unsafe { monitor_object.as_mut() };
-            if let Err(e) = unsafe { IddCxMonitorDeparture(obj) } {
+            let dep_result = unsafe { IddCxMonitorDeparture(obj) };
+            diag(&format!(
+                "remove_all(): IddCxMonitorDeparture(id={id}) ok={}",
+                dep_result.is_ok()
+            ));
+            if let Err(e) = dep_result {
                 error!("Failed to remove monitor: {e:?}");
             }
+        } else {
+            diag(&format!("remove_all(): id={id} had no object (never arrived)"));
         }
     }
+    diag("remove_all() EXIT");
 }
 
 fn remove(ids: &[u32]) {
