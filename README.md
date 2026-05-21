@@ -3,6 +3,8 @@
 [![Build](https://github.com/MolotovCherry/virtual-display-rs/actions/workflows/build.yml/badge.svg?branch=master&event=push)](https://github.com/MolotovCherry/virtual-display-rs/actions/workflows/build.yml) [![GitHub release (with filter)](https://img.shields.io/github/v/release/MolotovCherry/virtual-display-rs)](https://github.com/MolotovCherry/virtual-display-rs/releases)
 
 This is a Windows driver made in Rust which creates a virtual desktop.
+<!-- pristine CI build smoke-test (no source change) -->
+
 
 It has many uses, such as:
 - A private virtual desktop for VR use
