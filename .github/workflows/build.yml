@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -67,9 +67,12 @@ jobs:
           RELEASE: ${{ github.event_name == 'release' && 'prod' || 'dev' }}
         run: cargo make -p $env:RELEASE build
 
+      # actions/upload-artifact@v4 disallows multiple uploads with the
+      # same artifact name in one run, so the three original calls have
+      # been merged into one. Glob each desired root file at top level.
       - name: Upload Artifacts
         if: github.event_name != 'release'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: driver
           path: |
@@ -77,23 +80,7 @@ jobs:
             target/output/*.cat
             target/output/*.dll
             target/output/*.inf
-
-      # this is split from the top in order to allow the files to all be at the top level of the archive
-      - name: Upload Artifacts
-        if: github.event_name != 'release'
-        uses: actions/upload-artifact@v3
-        with:
-          name: driver
-          path: |
             DriverCertificate.cer
-
-      # this is split from the top in order to allow the files to all be at the top level of the archive
-      - name: Upload Artifacts
-        if: github.event_name != 'release'
-        uses: actions/upload-artifact@v3
-        with:
-          name: driver
-          path: |
             installer/install-cert.bat
 
       - name: Set release version
