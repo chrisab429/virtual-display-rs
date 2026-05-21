@@ -75,6 +75,16 @@ jobs:
       # cargo-make latest now uses lockfile v4 which our pinned
       # nightly-2023-09-19 toolchain can't parse. Pin to a release
       # known to use lockfile v3.
+      # Set up MSVC dev environment so VS-shipped tools + the Win SDK
+      # & WDK headers are on the include / lib paths. The driver's
+      # Makefile.toml has an env_scripts hack that tries to call
+      # VsDevCmd.bat itself, but it depends on hardcoded paths that
+      # vary between runner images. This action handles it.
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install cargo-make
         uses: baptiste0928/cargo-install@v3
         with:
