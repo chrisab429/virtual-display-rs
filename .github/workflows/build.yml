@@ -26,20 +26,24 @@ jobs:
         with:
           key: ${{ github.event_name == 'release' && 'prod' || 'dev' }}
 
+      # cargo-make latest now uses lockfile v4 which our pinned
+      # nightly-2023-09-19 toolchain can't parse. Pin to a release
+      # known to use lockfile v3.
       - name: Install cargo-make
-        uses: baptiste0928/cargo-install@v2
+        uses: baptiste0928/cargo-install@v3
         with:
           crate: cargo-make
+          version: "0.37.10"
 
       - name: Install cargo-target-dir
-        uses: baptiste0928/cargo-install@v2
+        uses: baptiste0928/cargo-install@v3
         with:
           crate: cargo-target-dir
           git: https://github.com/MolotovCherry/cargo-target-dir
 
       - name: Install cargo-wix
         if: github.event_name == 'release'
-        uses: baptiste0928/cargo-install@v2
+        uses: baptiste0928/cargo-install@v3
         with:
           crate: cargo-wix
 
