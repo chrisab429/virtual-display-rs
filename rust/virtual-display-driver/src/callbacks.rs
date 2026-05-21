@@ -26,18 +26,29 @@ pub extern "C-unwind" fn adapter_init_finished(
     adapter_object: *mut IDDCX_ADAPTER__,
     _p_in_args: *const IDARG_IN_ADAPTER_INIT_FINISHED,
 ) -> NTSTATUS {
+    crate::ipc::diag(&format!(
+        "adapter_init_finished ENTRY: adapter_object={:p}",
+        adapter_object,
+    ));
     let Some(adapter_ptr) = NonNull::new(adapter_object) else {
         error!("Adapter ptr was null");
+        crate::ipc::diag("adapter_init_finished: ABORT - null adapter ptr");
         return NTSTATUS::STATUS_INVALID_ADDRESS;
     };
 
     // store adapter object for listener to use
-    if ADAPTER.set(AdapterObject(adapter_ptr)).is_err() {
+    let set_result = ADAPTER.set(AdapterObject(adapter_ptr));
+    crate::ipc::diag(&format!(
+        "adapter_init_finished: ADAPTER.set result is_ok={}",
+        set_result.is_ok(),
+    ));
+    if set_result.is_err() {
         error!("Failed to set adapter");
         return NTSTATUS::STATUS_ADAPTER_HARDWARE_ERROR;
     }
 
     DeviceContext::finish_init();
+    crate::ipc::diag("adapter_init_finished: finish_init returned, STATUS_SUCCESS");
 
     NTSTATUS::STATUS_SUCCESS
 }
@@ -46,10 +57,14 @@ pub extern "C-unwind" fn device_d0_entry(
     device: WDFDEVICE,
     _previous_state: WDF_POWER_DEVICE_STATE,
 ) -> NTSTATUS {
+    crate::ipc::diag(&format!("device_d0_entry ENTRY: device={:p}", device));
     let status: NTSTATUS = unsafe {
         DeviceContext::get_mut(device.cast(), |context| {
             if let Err(e) = context.init_adapter() {
                 error!("Failed to init adapter: {e:?}");
+                crate::ipc::diag(&format!("device_d0_entry: init_adapter Err({e:?})"));
+            } else {
+                crate::ipc::diag("device_d0_entry: init_adapter Ok");
             }
         })
         .into()

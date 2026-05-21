@@ -182,13 +182,24 @@ impl DeviceContext {
         };
 
         let mut monitor_create_out = IDARG_OUT_MONITORCREATE::default();
-        unsafe {
+        crate::ipc::diag(&format!(
+            "create_monitor(idx={index}): pre IddCxMonitorCreate, self.adapter.is_some={}, adapter_ptr={:?}",
+            self.adapter.is_some(),
+            self.adapter.map(|a| a as *mut _),
+        ));
+        let create_result = unsafe {
             IddCxMonitorCreate(
                 self.adapter.ok_or(anyhow!("Failed to get adapter"))?,
                 &monitor_create,
                 &mut monitor_create_out,
-            )?
+            )
         };
+        crate::ipc::diag(&format!(
+            "create_monitor(idx={index}): IddCxMonitorCreate ok={}, mon_obj={:p}",
+            create_result.is_ok(),
+            monitor_create_out.MonitorObject,
+        ));
+        create_result?;
 
         // store monitor object for later
         {
@@ -210,14 +221,23 @@ impl DeviceContext {
             let context = MonitorContext::new(monitor_create_out.MonitorObject);
             context.init(monitor_create_out.MonitorObject as WDFOBJECT)?;
         }
+        crate::ipc::diag(&format!(
+            "create_monitor(idx={index}): MonitorContext::init OK, calling IddCxMonitorArrival"
+        ));
 
         // tell os monitor is plugged in
 
         let mut arrival_out = IDARG_OUT_MONITORARRIVAL::default();
 
-        unsafe {
-            IddCxMonitorArrival(monitor_create_out.MonitorObject, &mut arrival_out)?;
-        }
+        let arrival_result = unsafe {
+            IddCxMonitorArrival(monitor_create_out.MonitorObject, &mut arrival_out)
+        };
+        crate::ipc::diag(&format!(
+            "create_monitor(idx={index}): IddCxMonitorArrival ok={} (result={:?})",
+            arrival_result.is_ok(),
+            arrival_result,
+        ));
+        arrival_result?;
 
         Ok(())
     }
