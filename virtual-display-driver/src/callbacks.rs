@@ -39,10 +39,12 @@ pub extern "C-unwind" fn adapter_init_finished(
         return status;
     }
 
-    // store adapter object for listener to use
-    ADAPTER
-        .set(AdapterObject(NonNull::new(adapter_object).unwrap()))
-        .unwrap();
+    // store adapter object for listener to use. Replace any previous
+    // value — PnP re-init inside the same WUDFHost process gives us a
+    // fresh adapter pointer, and the old one is invalid after the
+    // previous disable.
+    *ADAPTER.lock().unwrap() =
+        Some(AdapterObject(NonNull::new(adapter_object).unwrap()));
 
     NTSTATUS::STATUS_SUCCESS
 }
