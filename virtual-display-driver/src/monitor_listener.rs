@@ -1,7 +1,10 @@
 use std::{
     ops::ControlFlow,
     ptr::NonNull,
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     thread,
 };
 
@@ -17,8 +20,16 @@ use winreg::{
 
 use crate::context::DeviceContext;
 
-pub static ADAPTER: OnceLock<AdapterObject> = OnceLock::new();
-pub static MONITOR_MODES: OnceLock<Mutex<Vec<MonitorObject>>> = OnceLock::new();
+// Statics are `Mutex<Option<T>>` / `Mutex<Vec<T>>` rather than
+// `OnceLock<T>` so the driver tolerates PnP disable+enable cycles
+// inside one WUDFHost process. The UMDF host stays alive across
+// device toggles, so `OnceLock::set(...).unwrap()` panics on the
+// second adapter_init_finished. The listener thread itself is only
+// spawned once per process; subsequent inits just clear+repopulate
+// monitor state from registry.
+pub static ADAPTER: Mutex<Option<AdapterObject>> = Mutex::new(None);
+pub static MONITOR_MODES: Mutex<Vec<MonitorObject>> = Mutex::new(Vec::new());
+static LISTENER_SPAWNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 pub struct AdapterObject(pub NonNull<IDDCX_ADAPTER__>);
@@ -35,20 +46,33 @@ unsafe impl Send for MonitorObject {}
 
 /// WARNING: Locks MONITOR_MODES, don't call if already locked or deadlock happens
 pub fn monitor_count() -> usize {
-    MONITOR_MODES.get().unwrap().lock().unwrap().len()
+    MONITOR_MODES.lock().unwrap().len()
 }
 
 pub fn startup() {
-    MONITOR_MODES.set(Mutex::new(Vec::new())).unwrap();
+    // PnP re-init in the same process: drop any stale monitor state
+    // from the previous adapter so the registry-driven config can
+    // repopulate cleanly. Without this the `add()` "id already
+    // present" guard rejects every monitor on the second init.
+    MONITOR_MODES.lock().unwrap().clear();
+
+    // Registry-driven default monitor config. Runs on every init,
+    // not just the first — that's the point: a freshly-written
+    // `data` value picked up via disable+enable cycle materializes
+    // the new monitor on enable.
+    let monitors = get_data();
+    if !monitors.is_empty() {
+        add(monitors);
+    }
+
+    // Pipe listener is per-process, not per-adapter-init. After
+    // the first startup() the thread keeps running and the pipe
+    // stays bound — subsequent inits share it.
+    if LISTENER_SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
 
     thread::spawn(move || {
-        let monitors = get_data();
-
-        // add default monitors saved in registry
-        if !monitors.is_empty() {
-            add(monitors);
-        }
-
         let server = NamedPipeServerOptions::new(r"\\.\pipe\virtualdisplaydriver")
             .reject_remote()
             .read_message()
@@ -113,7 +137,14 @@ fn get_data() -> Vec<Monitor> {
 }
 
 fn add(monitors: Vec<Monitor>) {
-    let adapter = ADAPTER.get().unwrap().0.as_ptr();
+    let adapter = {
+        let guard = ADAPTER.lock().unwrap();
+        let Some(a) = guard.as_ref() else {
+            warn!("Cannot add monitors yet; adapter not initialized");
+            return;
+        };
+        a.0.as_ptr()
+    };
 
     unsafe {
         DeviceContext::get_mut(adapter as *mut _, |context| {
@@ -121,7 +152,7 @@ fn add(monitors: Vec<Monitor>) {
                 let id = monitor.id;
 
                 {
-                    let mut lock = MONITOR_MODES.get().unwrap().lock().unwrap();
+                    let mut lock = MONITOR_MODES.lock().unwrap();
 
                     // if this monitor index is already in, do not add it, no-op it
                     if lock.iter().any(|m| m.monitor.id == id) {
@@ -143,7 +174,7 @@ fn add(monitors: Vec<Monitor>) {
 }
 
 fn remove_all() -> Option<ControlFlow<()>> {
-    let mut lock = MONITOR_MODES.get().unwrap().lock().unwrap();
+    let mut lock = MONITOR_MODES.lock().unwrap();
 
     for monitor in lock.drain(..) {
         let Some(mut monitor_object) = monitor.monitor_object else {
@@ -159,7 +190,7 @@ fn remove_all() -> Option<ControlFlow<()>> {
 }
 
 fn remove(ids: Vec<u32>) -> Option<ControlFlow<()>> {
-    let mut lock = MONITOR_MODES.get().unwrap().lock().unwrap();
+    let mut lock = MONITOR_MODES.lock().unwrap();
 
     let mut to_remove = Vec::new();
 
