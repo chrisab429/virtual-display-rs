@@ -21,6 +21,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # WDK is no longer pre-installed on windows-2022 images (it was
+      # at the time the original CI was written). wdf-umdf-sys's
+      # build.rs reads HKLM\Software\Microsoft\Windows Kits\Installed
+      # Roots\KitsRoot10 + Include\wdf\umdf\2.31 etc., so install both
+      # the SDK and WDK 22H2 via chocolatey. Choco's WDK package also
+      # installs the matching Visual Studio extension which provides
+      # stampinf.exe + inf2cat.exe used later in the Makefile.toml.
+      - name: Install WDK
+        run: |
+          choco install windowsdriverkit11 -y --no-progress
+          choco install windows-sdk-10-version-2104-all -y --no-progress
+        shell: pwsh
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
